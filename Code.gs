@@ -1,0 +1,381 @@
+/**
+ * れんらくアプリ自動保存
+ *
+ * れんらくアプリ（BusCatch）の通知メールを Gmail から探し、
+ * パスワード認証つきのお知らせページにアクセスして、本文と添付ファイルを Google Drive に保存します。
+ * 必要に応じて、下の CONFIG を変更してください。
+ */
+
+const CONFIG = {
+  // Google Driveに作る保存先フォルダ名です。
+  // 通常はこのままでOKです。
+  // マイドライブ直下に同じ名前のフォルダがなければ、自動で作成します。
+  // 例: 'renraku-app', '学校プリント', '幼稚園のお知らせ'
+  DRIVE_FOLDER_NAME: 'renraku-app',
+
+  // 既存フォルダに保存したい場合だけ、Google DriveのフォルダIDを入れてください。
+  // よく分からなければ空欄のままでOKです。
+  // 空欄の場合は、上の DRIVE_FOLDER_NAME のフォルダに保存します。
+  // 例: '1abcDEFghijk...' のような文字列
+  DRIVE_FOLDER_ID: '',
+
+  // Gmailの検索条件です。通常は変更不要です。
+  // れんらくアプリから届くメールの送信元ドメインで検索します。
+  GMAIL_QUERY: 'from:(@buscatch.net)',
+
+  // 処理済み・失敗を管理するGmailラベルです。
+  // 同じメールを何度も保存しないために使います。通常は変更不要です。
+  PROCESSED_LABEL: 'renraku-app-to-GoogleDrive/saved',
+  FAILED_LABEL: 'renraku-app-to-GoogleDrive/failed',
+
+  // フォルダ名やログの日付に使うタイムゾーンです。
+  // 日本で使う場合はこのままでOKです。
+  TIMEZONE: 'Asia/Tokyo',
+
+  // 1回の実行で処理する最大スレッド数です。
+  // たくさん未処理メールがある場合でも、1回で処理しすぎないようにしています。
+  // 通常は変更不要です。
+  MAX_THREADS_PER_RUN: 50,
+};
+
+/**
+ * まずはこの関数を選んで「実行」してください。
+ * 新しい れんらくアプリ のメールがあれば、Google Drive に保存します。
+ *
+ * 実行する前に、スクリプト プロパティに LOGIN_PASSWORD を設定してください。
+ * （詳しい手順は README.md を参照してください）
+ */
+function 今すぐ保存する() {
+  return renrakuAppAutoSaver.saveNow();
+}
+
+/**
+ * 動作確認ができたあとに、この関数を1回だけ実行してください。
+ * 以後、1時間ごとに自動で「今すぐ保存する」が実行されます。
+ */
+function 初回に1回だけ実行する_自動保存を開始() {
+  renrakuAppAutoSaver.startAutoSave();
+}
+
+const renrakuAppAutoSaver = (() => {
+  // メール本文に含まれる、お知らせ確認ページへのリンクを探すためのパターンです。
+  const MAIL_LINK_PATTERN = /https:\/\/buscatch\.net\/mobile\/[A-Za-z0-9_-]+\/open_confirm_mail\/open\/\?[^\s"'<>]+/g;
+
+  // お知らせページの中から、添付ファイル（PDF・画像など）のURLを探すためのパターンです。
+  const ATTACHMENT_URL_PATTERN = /https:\/\/img\.[A-Za-z0-9.-]*buscatch\.net\/\d+\/mail\/img\/[^\s"'<>]+/g;
+
+  function saveNow() {
+    const config = getConfig();
+
+    if (!config.loginPassword) {
+      throw new Error(
+        'スクリプト プロパティに LOGIN_PASSWORD が設定されていません。' +
+          'プロジェクトの設定 > スクリプト プロパティ から設定してください。（README.md 参照）'
+      );
+    }
+
+    const processedLabel = getOrCreateLabel(config.processedLabel);
+    const failedLabel = getOrCreateLabel(config.failedLabel);
+    const query = buildGmailQuery(config);
+    const threads = GmailApp.search(query, 0, config.maxThreadsPerRun);
+
+    // 古いメールから順番に保存します。
+    threads.sort((a, b) => a.getLastMessageDate() - b.getLastMessageDate());
+    Logger.log(`処理対象スレッド: ${threads.length}`);
+
+    const parentFolder = getSaveFolder(config);
+    let success = 0;
+    let failed = 0;
+
+    threads.forEach((thread) => {
+      let threadFailed = false;
+
+      thread.getMessages().forEach((message) => {
+        try {
+          processMessage(message, parentFolder, config);
+          success++;
+        } catch (error) {
+          Logger.log(`ERROR: ${message.getSubject()} - ${error.stack || error}`);
+          failed++;
+          threadFailed = true;
+        }
+      });
+
+      thread.addLabel(threadFailed ? failedLabel : processedLabel);
+    });
+
+    Logger.log(`完了: 成功 ${success} 件, 失敗 ${failed} 件`);
+    return { success: success, failed: failed };
+  }
+
+  function startAutoSave() {
+    // 二重登録を防ぐため、既存の自動実行設定を消してから作り直します。
+    removeExistingTriggers();
+    ScriptApp.newTrigger('今すぐ保存する').timeBased().everyHours(1).create();
+    Logger.log('自動保存を開始しました: 1時間ごとに確認します');
+  }
+
+  function removeExistingTriggers() {
+    ScriptApp.getProjectTriggers().forEach((trigger) => {
+      const handlerName = trigger.getHandlerFunction();
+      if (handlerName === '今すぐ保存する') {
+        ScriptApp.deleteTrigger(trigger);
+      }
+    });
+  }
+
+  function getConfig() {
+    return {
+      driveFolderId: CONFIG.DRIVE_FOLDER_ID,
+      driveFolderName: CONFIG.DRIVE_FOLDER_NAME,
+      gmailQuery: CONFIG.GMAIL_QUERY,
+      processedLabel: CONFIG.PROCESSED_LABEL,
+      failedLabel: CONFIG.FAILED_LABEL,
+      timezone: CONFIG.TIMEZONE,
+      maxThreadsPerRun: parsePositiveInteger(CONFIG.MAX_THREADS_PER_RUN, 50),
+      // パスワードはコードに書かず、スクリプト プロパティから読み込みます。
+      loginPassword: PropertiesService.getScriptProperties().getProperty('LOGIN_PASSWORD') || '',
+    };
+  }
+
+  function parsePositiveInteger(value, fallback) {
+    value = Number(value);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+  }
+
+  function buildGmailQuery(config) {
+    // 処理済み/失敗ラベルが付いているメールは検索対象から外します。
+    return [
+      config.gmailQuery,
+      `-label:"${config.processedLabel}"`,
+      `-label:"${config.failedLabel}"`,
+    ].join(' ');
+  }
+
+  function getSaveFolder(config) {
+    // DRIVE_FOLDER_ID が指定されている場合は、そのフォルダへ保存します。
+    if (config.driveFolderId) {
+      return DriveApp.getFolderById(config.driveFolderId);
+    }
+
+    // 指定がない場合は、DRIVE_FOLDER_NAME のフォルダを探します。
+    const folders = DriveApp.getFoldersByName(config.driveFolderName);
+    if (folders.hasNext()) {
+      return folders.next();
+    }
+
+    // フォルダがまだなければ、マイドライブ直下に作成します。
+    Logger.log(`保存先フォルダを作成します: ${config.driveFolderName}`);
+    return DriveApp.createFolder(config.driveFolderName);
+  }
+
+  function processMessage(message, parentFolder, config) {
+    const date = message.getDate();
+    const subject = (message.getSubject() || '無題').trim();
+    const body = message.getPlainBody() || '';
+    const mailLinks = uniqueMatches(body, MAIL_LINK_PATTERN);
+
+    // お知らせ確認ページへのリンクがないメールは保存対象外です。
+    if (mailLinks.length === 0) {
+      Logger.log(`お知らせ確認ページのURLが見つかりません: ${subject}`);
+      return;
+    }
+
+    const dateText = Utilities.formatDate(date, config.timezone, 'yyyyMMdd_HHmm');
+    const folderName = sanitizeDriveName(`${dateText}_${subject}`);
+    const subfolder = parentFolder.createFolder(folderName);
+
+    // 先にメール本文を保存し、その後に添付ファイルを保存します。
+    saveMessageBody(subfolder, message, subject, date, body, config);
+    const fileResult = saveLinkedFiles(subfolder, mailLinks, config);
+
+    Logger.log(`保存完了: ${subject} / 添付ファイル ${fileResult.saved} 件`);
+  }
+
+  function saveMessageBody(subfolder, message, subject, date, body, config) {
+    const bodyHeader =
+      `件名: ${subject}\n` +
+      `送信日時: ${Utilities.formatDate(date, config.timezone, 'yyyy/MM/dd HH:mm')} (${config.timezone})\n` +
+      `送信者: ${message.getFrom()}\n` +
+      '------------------------------\n\n';
+
+    subfolder.createFile('本文.txt', bodyHeader + body, MimeType.PLAIN_TEXT);
+  }
+
+  function saveLinkedFiles(subfolder, mailLinks, config) {
+    let saved = 0;
+
+    mailLinks.forEach((mailLink) => {
+      const fileUrls = fetchAttachmentUrls(mailLink, config.loginPassword);
+
+      if (fileUrls.length === 0) {
+        Logger.log(`添付ファイルが見つかりません: ${mailLink}`);
+        return;
+      }
+
+      fileUrls.forEach((url) => {
+        // 見つかった添付ファイルを1つずつ取得してDriveに保存します。
+        const fileResponse = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+        const fileStatus = fileResponse.getResponseCode();
+
+        if (fileStatus !== 200) {
+          Logger.log(`添付ファイル取得失敗 ${url}: ${fileStatus}`);
+          return;
+        }
+
+        const filename = sanitizeDriveName(getFilenameFromUrl(url) || `添付${saved + 1}${getExtensionFromUrl(url)}`);
+        subfolder.createFile(fileResponse.getBlob().setName(filename));
+        saved++;
+      });
+    });
+
+    return { saved: saved };
+  }
+
+  /**
+   * お知らせ確認ページのURLにアクセスし、パスワード認証を行った上で、
+   * ページ内から添付ファイルのURL一覧を取得します。
+   */
+  function fetchAttachmentUrls(mailLink, loginPassword) {
+    const linkParts = parseMailLink(mailLink);
+    if (!linkParts) {
+      throw new Error(`お知らせ確認ページのURLを解析できませんでした: ${mailLink}`);
+    }
+
+    const cookieJar = createCookieJar();
+
+    // 1. お知らせ確認ページへアクセスし、セッションを開始します（パスワード入力画面が返ってきます）。
+    const firstResponse = UrlFetchApp.fetch(mailLink, {
+      muteHttpExceptions: true,
+      headers: { Cookie: cookieJar.header() },
+    });
+    cookieJar.update(firstResponse);
+
+    // 2. パスワードを送信して認証します。認証に成功すると、お知らせ本文のページが返ってきます。
+    const loginUrl = `https://buscatch.net/mobile/${linkParts.schoolCode}/certifications/confirm_password/`;
+    const loginResponse = UrlFetchApp.fetch(loginUrl, {
+      method: 'post',
+      payload: { password: loginPassword, u: linkParts.u, s: linkParts.s },
+      muteHttpExceptions: true,
+      headers: { Cookie: cookieJar.header() },
+    });
+    cookieJar.update(loginResponse);
+
+    const html = loginResponse.getContentText('UTF-8');
+
+    if (isLoginFailed(html)) {
+      throw new Error(
+        'パスワード認証に失敗しました。スクリプト プロパティの LOGIN_PASSWORD が正しいか確認してください。'
+      );
+    }
+
+    // 3. 認証後のページから、添付ファイルのURLを探します。
+    return uniqueMatches(html, ATTACHMENT_URL_PATTERN);
+  }
+
+  function parseMailLink(mailLink) {
+    const match = mailLink.match(/https:\/\/buscatch\.net\/mobile\/([A-Za-z0-9_-]+)\/open_confirm_mail\/open\/\?(.+)/);
+    if (!match) {
+      return null;
+    }
+
+    const params = {};
+    match[2].split('&').forEach((pair) => {
+      const [key, value] = pair.split('=');
+      if (key) {
+        params[decodeURIComponent(key)] = decodeURIComponent(value || '');
+      }
+    });
+
+    if (!params.u || !params.s) {
+      return null;
+    }
+
+    return { schoolCode: match[1], u: params.u, s: params.s };
+  }
+
+  function isLoginFailed(html) {
+    // 認証に失敗すると、パスワード入力フォームが再度表示されます。
+    return /name="password"/.test(html || '');
+  }
+
+  function createCookieJar() {
+    const store = {};
+
+    return {
+      update(response) {
+        const headers = response.getAllHeaders();
+        let setCookie = headers['Set-Cookie'];
+        if (!setCookie) {
+          return;
+        }
+        if (!Array.isArray(setCookie)) {
+          setCookie = [setCookie];
+        }
+        setCookie.forEach((line) => {
+          const pair = line.split(';')[0];
+          const separatorIndex = pair.indexOf('=');
+          if (separatorIndex > -1) {
+            const name = pair.substring(0, separatorIndex).trim();
+            const value = pair.substring(separatorIndex + 1).trim();
+            store[name] = value;
+          }
+        });
+      },
+      header() {
+        return Object.keys(store)
+          .map((name) => `${name}=${store[name]}`)
+          .join('; ');
+      },
+    };
+  }
+
+  function sanitizeDriveName(name) {
+    // Driveで見づらくなる文字を整えて、長すぎる名前を短くします。
+    return String(name || '')
+      .replace(/[\/\\]/g, '_')
+      .replace(/\s+/g, ' ')
+      .substring(0, 200)
+      .trim();
+  }
+
+  function getFilenameFromUrl(url) {
+    const match = String(url || '').match(/\/([^\/?#]+)(?:[?#].*)?$/);
+    return match ? decodeURIComponent(match[1]) : '';
+  }
+
+  function getExtensionFromUrl(url) {
+    const match = String(url || '').match(/\.([A-Za-z0-9]+)(?:[?#].*)?$/);
+    return match ? `.${match[1]}` : '';
+  }
+
+  function uniqueMatches(text, regex) {
+    const matches = [];
+    const seen = {};
+    let match;
+
+    regex.lastIndex = 0;
+    while ((match = regex.exec(text || '')) !== null) {
+      const value = match[0];
+      if (!seen[value]) {
+        seen[value] = true;
+        matches.push(value);
+      }
+    }
+
+    return matches;
+  }
+
+  function getOrCreateLabel(name) {
+    let label = GmailApp.getUserLabelByName(name);
+    if (!label) {
+      label = GmailApp.createLabel(name);
+    }
+    return label;
+  }
+
+  return {
+    saveNow: saveNow,
+    startAutoSave: startAutoSave,
+  };
+})();

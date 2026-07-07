@@ -1,0 +1,6 @@
+.DS_Store
+.clasp.json
+node_modules/
+dist/
+tmp/
+*.log
