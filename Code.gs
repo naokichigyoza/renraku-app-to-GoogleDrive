@@ -235,6 +235,11 @@ const renrakuAppAutoSaver = (() => {
   /**
    * お知らせ確認ページのURLにアクセスし、パスワード認証を行った上で、
    * ページ内から添付ファイルのURL一覧を取得します。
+   *
+   * UrlFetchAppの自動リダイレクト追跡（followRedirects既定値true）は、
+   * リダイレクト先の最終レスポンスのヘッダーしか見えず、
+   * リダイレクトの途中で発行されるセッションCookieを取りこぼすことがあります。
+   * そのため、ここではリダイレクトを1段階ずつ自前で追いながらCookieを引き継ぎます。
    */
   function fetchAttachmentUrls(mailLink, loginPassword) {
     const linkParts = parseMailLink(mailLink);
@@ -245,23 +250,31 @@ const renrakuAppAutoSaver = (() => {
     const cookieJar = createCookieJar();
 
     // 1. お知らせ確認ページへアクセスし、セッションを開始します（パスワード入力画面が返ってきます）。
-    const firstResponse = UrlFetchApp.fetch(mailLink, {
-      muteHttpExceptions: true,
-      headers: { Cookie: cookieJar.header() },
-    });
-    cookieJar.update(firstResponse);
+    const firstResponse = fetchFollowingRedirects(mailLink, { muteHttpExceptions: true }, cookieJar);
+    Logger.log(
+      `[renraku-app] 初回アクセス status=${firstResponse.getResponseCode()} cookie=${cookieJar.header() ? 'あり' : 'なし'}`
+    );
 
-    // 2. パスワードを送信して認証します。認証に成功すると、お知らせ本文のページが返ってきます。
+    // 2. パスワードを送信して認証します。
+    //    このレスポンス自体には本文は乗っておらず、ログイン後にもう一度同じリンクを開き直すと
+    //    本文ページが表示される、という挙動が確認されているため、ここでは中身を使いません。
     const loginUrl = `https://buscatch.net/mobile/${linkParts.schoolCode}/certifications/confirm_password/`;
-    const loginResponse = UrlFetchApp.fetch(loginUrl, {
-      method: 'post',
-      payload: { password: loginPassword, u: linkParts.u, s: linkParts.s },
-      muteHttpExceptions: true,
-      headers: { Cookie: cookieJar.header() },
-    });
-    cookieJar.update(loginResponse);
+    const loginResponse = fetchFollowingRedirects(
+      loginUrl,
+      {
+        method: 'post',
+        payload: { password: loginPassword, u: linkParts.u, s: linkParts.s },
+        muteHttpExceptions: true,
+      },
+      cookieJar
+    );
+    Logger.log(`[renraku-app] ログインPOST status=${loginResponse.getResponseCode()}`);
 
-    const html = loginResponse.getContentText('UTF-8');
+    // 3. 認証済みのセッションで、あらためて同じお知らせリンクへアクセスします。
+    //    ここで返ってくるページに、本文と添付ファイルが含まれます。
+    const contentResponse = fetchFollowingRedirects(mailLink, { muteHttpExceptions: true }, cookieJar);
+    const html = contentResponse.getContentText('UTF-8');
+    Logger.log(`[renraku-app] 本文ページ status=${contentResponse.getResponseCode()} 本文長=${html.length}`);
 
     if (isLoginFailed(html)) {
       throw new Error(
@@ -269,8 +282,65 @@ const renrakuAppAutoSaver = (() => {
       );
     }
 
-    // 3. 認証後のページから、添付ファイルのURLを探します。
-    return uniqueMatches(html, ATTACHMENT_URL_PATTERN);
+    // 4. 本文ページから、添付ファイルのURLを探します。
+    const fileUrls = uniqueMatches(html, ATTACHMENT_URL_PATTERN);
+    if (fileUrls.length === 0) {
+      Logger.log(`[renraku-app] 添付ファイルURLが見つかりません。HTML先頭400文字: ${html.substring(0, 400)}`);
+    }
+    return fileUrls;
+  }
+
+  /**
+   * リダイレクト(3xx)を1段階ずつ自前で追いかけながらfetchします。
+   * 各レスポンスのSet-Cookieを毎回cookieJarに反映するため、
+   * リダイレクト途中で発行されるセッションCookieも取りこぼしません。
+   */
+  function fetchFollowingRedirects(url, options, cookieJar, maxRedirects) {
+    maxRedirects = maxRedirects || 5;
+    let currentUrl = url;
+    let currentOptions = options;
+    let response;
+
+    for (let i = 0; i <= maxRedirects; i++) {
+      const requestOptions = Object.assign({}, currentOptions, {
+        followRedirects: false,
+        headers: Object.assign({}, currentOptions.headers, { Cookie: cookieJar.header() }),
+      });
+
+      response = UrlFetchApp.fetch(currentUrl, requestOptions);
+      cookieJar.update(response);
+
+      const status = response.getResponseCode();
+      if (status < 300 || status >= 400) {
+        break;
+      }
+
+      const location = getHeaderCaseInsensitive(response.getAllHeaders(), 'Location');
+      if (!location) {
+        break;
+      }
+
+      // リダイレクト先はGETで取得します（POSTの302/303リダイレクトはブラウザもGETに切り替えるのが一般的です）。
+      currentUrl = resolveUrl(location);
+      currentOptions = { muteHttpExceptions: true };
+    }
+
+    return response;
+  }
+
+  function getHeaderCaseInsensitive(headers, name) {
+    const key = Object.keys(headers || {}).find((k) => k.toLowerCase() === name.toLowerCase());
+    return key ? headers[key] : null;
+  }
+
+  function resolveUrl(location) {
+    if (/^https?:\/\//i.test(location)) {
+      return location;
+    }
+    if (location.startsWith('/')) {
+      return `https://buscatch.net${location}`;
+    }
+    return location;
   }
 
   function parseMailLink(mailLink) {
