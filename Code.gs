@@ -38,10 +38,9 @@ const CONFIG = {
   MAX_THREADS_PER_RUN: 50,
 
   // LINEへの転送を行うかどうかです。
-  // false にすると、保存は行うがLINE送信だけスキップします（検証中はfalseがおすすめです）。
+  // false にすると、保存は行うがLINE送信だけスキップします。
   // スクリプト プロパティに LINE_TOKEN / LINE_GROUP_ID が未設定の場合も、自動でスキップされます。
-  // 本文プレビュー機能が完成するまでは false にしています。
-  LINE_ENABLED: false,
+  LINE_ENABLED: true,
 
   // LINEメッセージ本文の最大文字数です。通常は変更不要です。
   LINE_BODY_MAX_CHARS: 3500,
