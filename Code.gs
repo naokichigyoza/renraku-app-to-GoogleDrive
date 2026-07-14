@@ -19,7 +19,7 @@ const CONFIG = {
   // 例: '1abcDEFghijk...' のような文字列
   //
   // ここに直接書く代わりに、スクリプト プロパティに DRIVE_FOLDER_ID を設定しても上書きできます
-  // （例: e-msg版と同じフォルダを指定したいが、フォルダIDをコードに残したくない場合）。
+  // （例: 既存の共有フォルダを指定したいが、フォルダIDをコードに残したくない場合）。
   DRIVE_FOLDER_ID: '',
 
   // Gmailの検索条件です。通常は変更不要です。
@@ -74,6 +74,43 @@ function 初回に1回だけ実行する_自動保存を開始() {
  */
 function LINE送信をテストする() {
   renrakuAppAutoSaver.testLine();
+}
+
+/**
+ * LINE Bot から呼ばれるWebhookハンドラです（LINE_GROUP_IDを調べるためのものです）。
+ * Botを通知先グループに招待すると "join" イベントが届くので、
+ * その source.groupId をスクリプト プロパティに保存します。
+ *
+ * 使い方: このプロジェクトをWebアプリとしてデプロイし（実行ユーザー: 自分 / アクセスできるユーザー: 全員）、
+ * 発行されたURLをLINE Developersコンソールの Webhook URL に設定します。
+ * その後Botをグループに招待し、`グループIDを確認する` を実行してください。
+ */
+function doPost(e) {
+  try {
+    const events = JSON.parse(e.postData.contents).events || [];
+    events.forEach((event) => {
+      const source = event.source || {};
+      if (source.groupId) {
+        PropertiesService.getScriptProperties().setProperty('LAST_GROUP_ID', source.groupId);
+        Logger.log(`Webhook: ${event.type} from group ${source.groupId}`);
+      } else {
+        Logger.log(`Webhook: ${event.type} from ${JSON.stringify(source)}`);
+      }
+    });
+  } catch (err) {
+    Logger.log(`Webhook error: ${err}`);
+  }
+  return ContentService.createTextOutput('OK');
+}
+
+/**
+ * Webhookで記録した最新のグループIDを実行ログに表示します。
+ * LINE_GROUP_ID に設定する値を調べるために使います。
+ */
+function グループIDを確認する() {
+  const id = PropertiesService.getScriptProperties().getProperty('LAST_GROUP_ID');
+  Logger.log(`直近のグループID: ${id || '（まだ記録されていません）'}`);
+  return id;
 }
 
 const renrakuAppAutoSaver = (() => {
