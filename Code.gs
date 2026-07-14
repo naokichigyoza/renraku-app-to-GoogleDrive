@@ -8,16 +8,16 @@
 
 const CONFIG = {
   // Google Driveに作る保存先フォルダ名です。
-  // 通常はこのままでOKです。
+  // 下の DRIVE_FOLDER_ID が空欄のときだけ使われます。
   // マイドライブ直下に同じ名前のフォルダがなければ、自動で作成します。
   // 例: 'renraku-app', '学校プリント', '幼稚園のお知らせ'
   DRIVE_FOLDER_NAME: 'renraku-app',
 
-  // 既存フォルダに保存したい場合だけ、Google DriveのフォルダIDを入れてください。
-  // よく分からなければ空欄のままでOKです。
+  // 保存先のGoogle DriveフォルダIDです。
+  // 「もりのようちえん」フォルダ（e-msg版の幼稚園配信通知と共通）に保存するため設定済みです。
+  // 別のフォルダに保存したい場合は、ここを空欄にするか、別のフォルダIDに変更してください。
   // 空欄の場合は、上の DRIVE_FOLDER_NAME のフォルダに保存します。
-  // 例: '1abcDEFghijk...' のような文字列
-  DRIVE_FOLDER_ID: '',
+  DRIVE_FOLDER_ID: '1bzr1TIMdTtq_EmNBGbhgqR_T4oSIbpCj',
 
   // Gmailの検索条件です。通常は変更不要です。
   // れんらくアプリから届くメールの送信元ドメインで検索します。
@@ -36,6 +36,14 @@ const CONFIG = {
   // たくさん未処理メールがある場合でも、1回で処理しすぎないようにしています。
   // 通常は変更不要です。
   MAX_THREADS_PER_RUN: 50,
+
+  // LINEへの転送を行うかどうかです。
+  // false にすると、保存は行うがLINE送信だけスキップします（検証中はfalseがおすすめです）。
+  // スクリプト プロパティに LINE_TOKEN / LINE_GROUP_ID が未設定の場合も、自動でスキップされます。
+  LINE_ENABLED: true,
+
+  // LINEメッセージ本文の最大文字数です。通常は変更不要です。
+  LINE_BODY_MAX_CHARS: 3500,
 };
 
 /**
@@ -55,6 +63,14 @@ function 今すぐ保存する() {
  */
 function 初回に1回だけ実行する_自動保存を開始() {
   renrakuAppAutoSaver.startAutoSave();
+}
+
+/**
+ * LINE連携の動作確認用です。テストメッセージを1件送信します。
+ * スクリプト プロパティに LINE_TOKEN / LINE_GROUP_ID を設定してから実行してください。
+ */
+function LINE送信をテストする() {
+  renrakuAppAutoSaver.testLine();
 }
 
 const renrakuAppAutoSaver = (() => {
@@ -135,6 +151,11 @@ const renrakuAppAutoSaver = (() => {
       maxThreadsPerRun: parsePositiveInteger(CONFIG.MAX_THREADS_PER_RUN, 50),
       // パスワードはコードに書かず、スクリプト プロパティから読み込みます。
       loginPassword: PropertiesService.getScriptProperties().getProperty('LOGIN_PASSWORD') || '',
+      lineEnabled: CONFIG.LINE_ENABLED,
+      lineBodyMaxChars: parsePositiveInteger(CONFIG.LINE_BODY_MAX_CHARS, 3500),
+      // LINEのトークン・グループIDもコードに書かず、スクリプト プロパティから読み込みます。
+      lineToken: PropertiesService.getScriptProperties().getProperty('LINE_TOKEN') || '',
+      lineGroupId: PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID') || '',
     };
   }
 
@@ -190,6 +211,18 @@ const renrakuAppAutoSaver = (() => {
     const fileResult = saveLinkedFiles(subfolder, mailLinks, config);
 
     Logger.log(`保存完了: ${subject} / 添付ファイル ${fileResult.saved} 件`);
+
+    if (config.lineEnabled) {
+      pushToLine(
+        buildLineMessage({
+          subject: subject,
+          date: date,
+          folderUrl: subfolder.getUrl(),
+          attachmentCount: fileResult.saved,
+        }),
+        config
+      );
+    }
   }
 
   function saveMessageBody(subfolder, message, subject, date, body, config) {
@@ -230,6 +263,47 @@ const renrakuAppAutoSaver = (() => {
     });
 
     return { saved: saved };
+  }
+
+  /**
+   * LINEグループにテキストメッセージをプッシュ送信します。
+   * スクリプト プロパティに LINE_TOKEN と LINE_GROUP_ID が必要です。
+   * 未設定の場合は、保存処理を止めずに警告ログだけ出してスキップします。
+   */
+  function pushToLine(text, config) {
+    if (!config.lineToken || !config.lineGroupId) {
+      Logger.log('LINE未設定: スクリプト プロパティに LINE_TOKEN / LINE_GROUP_ID を設定してください（今回はスキップ）');
+      return;
+    }
+
+    const response = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: `Bearer ${config.lineToken}` },
+      payload: JSON.stringify({
+        to: config.lineGroupId,
+        messages: [{ type: 'text', text: text }],
+      }),
+      muteHttpExceptions: true,
+    });
+
+    const status = response.getResponseCode();
+    if (status >= 300) {
+      Logger.log(`LINE送信失敗 (${status}): ${response.getContentText()}`);
+    }
+  }
+
+  /**
+   * LINEに送るテキストメッセージを組み立てます。
+   */
+  function buildLineMessage({ subject, date, folderUrl, attachmentCount }) {
+    const lines = [];
+    lines.push(subject);
+    lines.push(Utilities.formatDate(date, CONFIG.TIMEZONE, 'yyyy/MM/dd HH:mm'));
+    lines.push('');
+    lines.push(attachmentCount > 0 ? `📎 添付ファイル ${attachmentCount} 件` : '本文のみ（添付ファイルなし）');
+    lines.push(`🔗 ${folderUrl}`);
+    return lines.join('\n');
   }
 
   /**
@@ -444,8 +518,14 @@ const renrakuAppAutoSaver = (() => {
     return label;
   }
 
+  function testLine() {
+    const config = getConfig();
+    pushToLine('テスト送信です（renraku-app-to-GoogleDrive）', config);
+  }
+
   return {
     saveNow: saveNow,
     startAutoSave: startAutoSave,
+    testLine: testLine,
   };
 })();

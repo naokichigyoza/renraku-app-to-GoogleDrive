@@ -2,7 +2,7 @@
 
 幼稚園や学校で、[れんらくアプリ（BusCatch）](https://www.buscatch.com/renraku-app/) を使ってお知らせを受け取っている方向けのツールです。
 
-れんらくアプリから届く通知メールをきっかけに、お知らせ本文と添付ファイル（PDFなど）を、Google Driveに自動保存します。
+れんらくアプリから届く通知メールをきっかけに、お知らせ本文と添付ファイル（PDFなど）を、Google Driveに自動保存します。保存先は、同時に使っている [e-msg-to-GoogleDrive](https://github.com/naokichigyoza/e-msg-to-GoogleDrive) と同じ「もりのようちえん」フォルダです。保存後、LINEの家族グループにも通知を転送できます。
 
 これで「後で確認しようと思って忘れていた・・・！」と困ることが無くなります。
 
@@ -17,12 +17,12 @@
 
 ## 保存されるもの
 
-初期設定のまま使うと、Google Driveの「マイドライブ」に `renraku-app` というフォルダが作られます。
+初期設定のまま使うと、Google Driveの「もりのようちえん」フォルダ（e-msg版と共通）に保存されます。
 
 その中に、メールごとにフォルダが作られます。
 
 ```text
-renraku-app/
+もりのようちえん/
   20260707_1911_7月おやじの会/
     本文.txt
     6184541_1.pdf
@@ -32,6 +32,8 @@ renraku-app/
 
 - お知らせのタイトルと通知メールの本文
 - お知らせページにログインして取得できる添付ファイル（PDFなど）
+
+保存が終わると、設定していればLINEの家族グループにも通知が転送されます。
 
 ## 使い方
 
@@ -84,9 +86,19 @@ https://buscatch.net/mobile/xxxxx/open_confirm_mail/open/?m=...&u=...&s=...
 3. 権限の内容が表示されたら、チェックボックスにチェックを入れる
 4. 「続行」または「許可」を押す
 
-実行が終わったら、Google Driveのマイドライブに `renraku-app` フォルダができているか確認してください。
+実行が終わったら、Google Driveの「もりのようちえん」フォルダに保存されているか確認してください。
 
-### 6. 自動実行を設定する
+### 6. LINE転送を設定する（任意）
+
+保存に加えて、LINEの家族グループにも通知したい場合は設定してください。不要であれば、この手順は飛ばして構いません（`Code.gs` の `CONFIG.LINE_ENABLED` を `false` にすれば、LINE送信だけ止められます）。
+
+LINE Messaging APIのトークンとグループIDは、e-msg版（「幼稚園配信通知」）ですでに使っているものをそのまま流用できます。
+
+1. 「幼稚園配信通知」のApps Scriptプロジェクトを開き、プロジェクトの設定 > スクリプト プロパティ から `LINE_TOKEN` と `LINE_GROUP_ID` の値を確認します。
+2. このプロジェクト（れんらくアプリ自動保存）のプロジェクトの設定 > スクリプト プロパティ に、同じ名前・同じ値で `LINE_TOKEN` と `LINE_GROUP_ID` を追加します（手順4のパスワード設定と同じ操作です）。
+3. 関数選択で `LINE送信をテストする` を選び、「実行」を押します。LINEグループにテストメッセージが届けば成功です。
+
+### 7. 自動実行を設定する
 
 問題なく保存できたら、関数選択で `初回に1回だけ実行する_自動保存を開始` を選び、「実行」を押します。
 
@@ -101,18 +113,20 @@ https://buscatch.net/mobile/xxxxx/open_confirm_mail/open/?m=...&u=...&s=...
 ```js
 const CONFIG = {
   DRIVE_FOLDER_NAME: 'renraku-app',
-  DRIVE_FOLDER_ID: '',
+  DRIVE_FOLDER_ID: '1bzr1TIMdTtq_EmNBGbhgqR_T4oSIbpCj', // もりのようちえん（e-msg版と共通）
   GMAIL_QUERY: 'from:(@buscatch.net)',
   PROCESSED_LABEL: 'renraku-app-to-GoogleDrive/saved',
   FAILED_LABEL: 'renraku-app-to-GoogleDrive/failed',
   TIMEZONE: 'Asia/Tokyo',
   MAX_THREADS_PER_RUN: 50,
+  LINE_ENABLED: true,
+  LINE_BODY_MAX_CHARS: 3500,
 };
 ```
 
 それぞれの項目の説明は、`Code.gs` のコメントに書いてあります。
 
-パスワードだけは `CONFIG` には含まれておらず、スクリプト プロパティの `LOGIN_PASSWORD` から読み込みます。
+パスワードと同様、LINEのトークン・グループIDも `CONFIG` には含まれておらず、スクリプト プロパティの `LINE_TOKEN` ・ `LINE_GROUP_ID` から読み込みます。
 
 ## うまくいかないとき
 
@@ -123,7 +137,9 @@ const CONFIG = {
 | 「パスワード認証に失敗しました」と出る | スクリプト プロパティの `LOGIN_PASSWORD` の値が正しいか確認してください。園でパスワードが変更された場合は、値を更新してください。 |
 | 添付ファイルが保存されない | お知らせにファイルが添付されていない可能性があります。本文.txt の内容を確認してください。 |
 | 同じメールがもう一度保存された | Gmailの処理済みラベルを外すと、再度保存されます。 |
-| 保存先を変えたい | `Code.gs` 先頭の `DRIVE_FOLDER_NAME` を変更してください。 |
+| 保存先を変えたい | `Code.gs` 先頭の `DRIVE_FOLDER_ID`（または `DRIVE_FOLDER_NAME`）を変更してください。 |
+| LINEに届かない | スクリプト プロパティに `LINE_TOKEN` ・ `LINE_GROUP_ID` が正しく設定されているか確認してください（手順6）。実行ログに「LINE送信失敗」と出ていないかも確認してください。 |
+| LINE送信だけ止めたい | `Code.gs` 先頭の `CONFIG.LINE_ENABLED` を `false` にしてください。保存処理はそのまま動きます。 |
 
 ## 注意
 
