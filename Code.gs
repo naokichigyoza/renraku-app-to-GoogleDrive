@@ -13,11 +13,14 @@ const CONFIG = {
   // 例: 'renraku-app', '学校プリント', '幼稚園のお知らせ'
   DRIVE_FOLDER_NAME: 'renraku-app',
 
-  // 保存先のGoogle DriveフォルダIDです。
-  // 「もりのようちえん」フォルダ（e-msg版の幼稚園配信通知と共通）に保存するため設定済みです。
-  // 別のフォルダに保存したい場合は、ここを空欄にするか、別のフォルダIDに変更してください。
+  // 既存フォルダに保存したい場合だけ、Google DriveのフォルダIDを入れてください。
+  // よく分からなければ空欄のままでOKです。
   // 空欄の場合は、上の DRIVE_FOLDER_NAME のフォルダに保存します。
-  DRIVE_FOLDER_ID: '1bzr1TIMdTtq_EmNBGbhgqR_T4oSIbpCj',
+  // 例: '1abcDEFghijk...' のような文字列
+  //
+  // ここに直接書く代わりに、スクリプト プロパティに DRIVE_FOLDER_ID を設定しても上書きできます
+  // （例: e-msg版と同じフォルダを指定したいが、フォルダIDをコードに残したくない場合）。
+  DRIVE_FOLDER_ID: '',
 
   // Gmailの検索条件です。通常は変更不要です。
   // れんらくアプリから届くメールの送信元ドメインで検索します。
@@ -142,7 +145,8 @@ const renrakuAppAutoSaver = (() => {
 
   function getConfig() {
     return {
-      driveFolderId: CONFIG.DRIVE_FOLDER_ID,
+      // スクリプト プロパティに DRIVE_FOLDER_ID があれば、CONFIG より優先します。
+      driveFolderId: PropertiesService.getScriptProperties().getProperty('DRIVE_FOLDER_ID') || CONFIG.DRIVE_FOLDER_ID,
       driveFolderName: CONFIG.DRIVE_FOLDER_NAME,
       gmailQuery: CONFIG.GMAIL_QUERY,
       processedLabel: CONFIG.PROCESSED_LABEL,
