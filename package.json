@@ -1,0 +1,14 @@
+{
+  "name": "renraku-app-to-googledrive",
+  "version": "1.0.0",
+  "description": "れんらくアプリ（BusCatch）の通知メールから、お知らせ本文と添付ファイルをGoogle Driveに自動保存するGoogle Apps Script",
+  "scripts": {
+    "push": "clasp push"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@google/clasp": "^3.3.0"
+  }
+}
