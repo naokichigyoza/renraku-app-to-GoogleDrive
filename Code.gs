@@ -40,7 +40,8 @@ const CONFIG = {
   // LINEへの転送を行うかどうかです。
   // false にすると、保存は行うがLINE送信だけスキップします（検証中はfalseがおすすめです）。
   // スクリプト プロパティに LINE_TOKEN / LINE_GROUP_ID が未設定の場合も、自動でスキップされます。
-  LINE_ENABLED: true,
+  // 本文プレビュー機能が完成するまでは false にしています。
+  LINE_ENABLED: false,
 
   // LINEメッセージ本文の最大文字数です。通常は変更不要です。
   LINE_BODY_MAX_CHARS: 3500,
@@ -206,47 +207,61 @@ const renrakuAppAutoSaver = (() => {
     const folderName = sanitizeDriveName(`${dateText}_${subject}`);
     const subfolder = parentFolder.createFolder(folderName);
 
-    // 先にメール本文を保存し、その後に添付ファイルを保存します。
-    saveMessageBody(subfolder, message, subject, date, body, config);
+    // 先に添付ファイル（と、お知らせページから取れる本文プレビュー）を取得し、
+    // その後にメール本文とあわせて保存します。
     const fileResult = saveLinkedFiles(subfolder, mailLinks, config);
+    saveMessageBody(subfolder, message, subject, date, body, fileResult.bodyPreview, config);
 
     Logger.log(`保存完了: ${subject} / 添付ファイル ${fileResult.saved} 件`);
 
+    // LINEに送る内容は、LINE_ENABLEDがfalseでも組み立ててログに出します。
+    // 実行ログでプレビューしてから、送信を有効にするかどうか判断できるようにするためです。
+    const lineMessage = buildLineMessage({
+      subject: subject,
+      date: date,
+      folderUrl: subfolder.getUrl(),
+      attachmentCount: fileResult.saved,
+      bodyPreview: fileResult.bodyPreview,
+    });
+    Logger.log(`[renraku-app][LINEプレビュー] ${subject}\n${lineMessage}`);
+
     if (config.lineEnabled) {
-      pushToLine(
-        buildLineMessage({
-          subject: subject,
-          date: date,
-          folderUrl: subfolder.getUrl(),
-          attachmentCount: fileResult.saved,
-        }),
-        config
-      );
+      pushToLine(lineMessage, config);
     }
   }
 
-  function saveMessageBody(subfolder, message, subject, date, body, config) {
+  function saveMessageBody(subfolder, message, subject, date, body, bodyPreview, config) {
     const bodyHeader =
       `件名: ${subject}\n` +
       `送信日時: ${Utilities.formatDate(date, config.timezone, 'yyyy/MM/dd HH:mm')} (${config.timezone})\n` +
       `送信者: ${message.getFrom()}\n` +
       '------------------------------\n\n';
 
-    subfolder.createFile('本文.txt', bodyHeader + body, MimeType.PLAIN_TEXT);
+    // お知らせページから本文が取れた場合は、そちらを主に、メールの定型文は参考として末尾に添えます。
+    const content = bodyPreview
+      ? `${bodyHeader}${bodyPreview}\n\n------------------------------\n（メール本文）\n${body}`
+      : bodyHeader + body;
+
+    subfolder.createFile('本文.txt', content, MimeType.PLAIN_TEXT);
   }
 
   function saveLinkedFiles(subfolder, mailLinks, config) {
     let saved = 0;
+    let bodyPreview = '';
 
     mailLinks.forEach((mailLink) => {
-      const fileUrls = fetchAttachmentUrls(mailLink, config.loginPassword);
+      const result = fetchAttachmentUrls(mailLink, config.loginPassword);
 
-      if (fileUrls.length === 0) {
+      if (!bodyPreview && result.bodyPreview) {
+        bodyPreview = result.bodyPreview;
+      }
+
+      if (result.fileUrls.length === 0) {
         Logger.log(`添付ファイルが見つかりません: ${mailLink}`);
         return;
       }
 
-      fileUrls.forEach((url) => {
+      result.fileUrls.forEach((url) => {
         // 見つかった添付ファイルを1つずつ取得してDriveに保存します。
         const fileResponse = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
         const fileStatus = fileResponse.getResponseCode();
@@ -262,7 +277,7 @@ const renrakuAppAutoSaver = (() => {
       });
     });
 
-    return { saved: saved };
+    return { saved: saved, bodyPreview: bodyPreview };
   }
 
   /**
@@ -296,13 +311,47 @@ const renrakuAppAutoSaver = (() => {
   /**
    * LINEに送るテキストメッセージを組み立てます。
    */
-  function buildLineMessage({ subject, date, folderUrl, attachmentCount }) {
+  function buildLineMessage({ subject, date, folderUrl, attachmentCount, bodyPreview }) {
     const lines = [];
     lines.push(subject);
     lines.push(Utilities.formatDate(date, CONFIG.TIMEZONE, 'yyyy/MM/dd HH:mm'));
+
+    if (bodyPreview) {
+      lines.push('');
+      let text = removeSubjectDuplicateLine(bodyPreview, subject);
+      if (text.length > CONFIG.LINE_BODY_MAX_CHARS) {
+        text = `${text.substring(0, CONFIG.LINE_BODY_MAX_CHARS)}…(以下省略・Driveで全文確認)`;
+      }
+      lines.push(text);
+    }
+
     lines.push('');
     lines.push(attachmentCount > 0 ? `📎 添付ファイル ${attachmentCount} 件` : '本文のみ（添付ファイルなし）');
     lines.push(`🔗 ${folderUrl}`);
+    return lines.join('\n');
+  }
+
+  /**
+   * 本文プレビューの先頭行が件名とほぼ同じ内容（「ただいま」等の前置きや句点の有無を除いて重複）の場合、
+   * LINEの表示上はその1行を取り除きます（件名がすでに1行目に出ているため）。
+   */
+  function removeSubjectDuplicateLine(text, subject) {
+    if (!text || !subject) {
+      return text;
+    }
+
+    const lines = text.split('\n');
+    const firstLine = (lines[0] || '').replace(/[。、\s]+$/, '').trim();
+    const normalizedSubject = subject.trim();
+
+    if (!firstLine || (!normalizedSubject.includes(firstLine) && !firstLine.includes(normalizedSubject))) {
+      return text;
+    }
+
+    lines.shift();
+    while (lines.length > 0 && lines[0].trim() === '') {
+      lines.shift();
+    }
     return lines.join('\n');
   }
 
@@ -356,12 +405,32 @@ const renrakuAppAutoSaver = (() => {
       );
     }
 
-    // 4. 本文ページから、添付ファイルのURLを探します。
+    // 4. 本文ページから、添付ファイルのURLと本文プレビューを探します。
     const fileUrls = uniqueMatches(html, ATTACHMENT_URL_PATTERN);
     if (fileUrls.length === 0) {
       Logger.log(`[renraku-app] 添付ファイルURLが見つかりません。HTML先頭400文字: ${html.substring(0, 400)}`);
     }
-    return fileUrls;
+
+    return { fileUrls: fileUrls, bodyPreview: extractBodyPreview(html) };
+  }
+
+  /**
+   * お知らせページのHTMLから、本文プレビューを抜き出します。
+   * 本文は <dl class="info"> 直下の最初の <dd> に入っており、
+   * 添付ファイルがある場合はそれ以降の <dd> に添付リンクが続きます。
+   */
+  function extractBodyPreview(html) {
+    const match = (html || '').match(/<dl class="info">\s*<dd>([\s\S]*?)<\/dd>/);
+    if (!match) {
+      return '';
+    }
+
+    let text = match[1];
+    text = text.replace(/<br\s*\/?>/gi, '\n');
+    text = text.replace(/<[^>]+>/g, '');
+    text = decodeHtml(text);
+    text = text.replace(/\n{3,}/g, '\n\n');
+    return text.trim();
   }
 
   /**
@@ -472,6 +541,16 @@ const renrakuAppAutoSaver = (() => {
           .join('; ');
       },
     };
+  }
+
+  function decodeHtml(text) {
+    return String(text || '')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, ' ');
   }
 
   function sanitizeDriveName(name) {
