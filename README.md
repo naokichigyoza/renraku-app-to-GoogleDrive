@@ -114,7 +114,7 @@ https://buscatch.net/mobile/xxxxx/open_confirm_mail/open/?m=...&u=...&s=...
 
 問題なく保存できたら、関数選択で `初回に1回だけ実行する_自動保存を開始` を選び、「実行」を押します。
 
-これで1時間ごとに自動で確認し、新しいメールがあれば保存します。
+トリガー自体は15分ごとに動きますが、`Code.gs` 先頭の `CONFIG.ACTIVE_HOUR_START` 〜 `ACTIVE_HOUR_END`（初期値は7時〜21時）の時間外は、Gmail確認やログインをせずにすぐ終了します。夜間に無駄なアクセスをしないための仕組みです。時間帯を変えたい場合は、この2つの値を編集してください。
 
 ## 設定を変えたい場合
 
@@ -133,6 +133,8 @@ const CONFIG = {
   MAX_THREADS_PER_RUN: 50,
   LINE_ENABLED: true,
   LINE_BODY_MAX_CHARS: 3500,
+  ACTIVE_HOUR_START: 7,
+  ACTIVE_HOUR_END: 21,
 };
 ```
 

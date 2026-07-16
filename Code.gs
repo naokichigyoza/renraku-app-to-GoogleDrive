@@ -47,6 +47,12 @@ const CONFIG = {
 
   // LINEメッセージ本文の最大文字数です。通常は変更不要です。
   LINE_BODY_MAX_CHARS: 3500,
+
+  // 自動実行を行う時間帯です（この時間の間だけ、Gmail確認・ログインを行います）。
+  // 夜間に無駄なアクセスをしないようにするためのものです。
+  // 過去の通知メール実績（7:09〜20:02）をもとに、少し余裕を持たせています。
+  ACTIVE_HOUR_START: 7, // この時刻（0-23）から
+  ACTIVE_HOUR_END: 21, // この時刻（0-23）の直前まで
 };
 
 /**
@@ -123,6 +129,11 @@ const renrakuAppAutoSaver = (() => {
   function saveNow() {
     const config = getConfig();
 
+    if (!isWithinActiveHours(config)) {
+      Logger.log(`稼働時間外（${config.activeHourStart}〜${config.activeHourEnd}時）のため、今回はスキップします`);
+      return { success: 0, failed: 0 };
+    }
+
     if (!config.loginPassword) {
       throw new Error(
         'スクリプト プロパティに LOGIN_PASSWORD が設定されていません。' +
@@ -167,8 +178,17 @@ const renrakuAppAutoSaver = (() => {
   function startAutoSave() {
     // 二重登録を防ぐため、既存の自動実行設定を消してから作り直します。
     removeExistingTriggers();
-    ScriptApp.newTrigger('今すぐ保存する').timeBased().everyHours(1).create();
-    Logger.log('自動保存を開始しました: 1時間ごとに確認します');
+    // トリガー自体は一日中15分ごとに動きますが、稼働時間外は saveNow() の中で
+    // 何もせずすぐ終了するため、実質的には日中だけの動作になります。
+    ScriptApp.newTrigger('今すぐ保存する').timeBased().everyMinutes(15).create();
+    Logger.log(
+      `自動保存を開始しました: 15分ごとに確認します（${CONFIG.ACTIVE_HOUR_START}〜${CONFIG.ACTIVE_HOUR_END}時のみ実際に確認します）`
+    );
+  }
+
+  function isWithinActiveHours(config) {
+    const hour = Number(Utilities.formatDate(new Date(), config.timezone, 'H'));
+    return hour >= config.activeHourStart && hour < config.activeHourEnd;
   }
 
   function removeExistingTriggers() {
@@ -197,6 +217,8 @@ const renrakuAppAutoSaver = (() => {
       // LINEのトークン・グループIDもコードに書かず、スクリプト プロパティから読み込みます。
       lineToken: PropertiesService.getScriptProperties().getProperty('LINE_TOKEN') || '',
       lineGroupId: PropertiesService.getScriptProperties().getProperty('LINE_GROUP_ID') || '',
+      activeHourStart: parsePositiveInteger(CONFIG.ACTIVE_HOUR_START, 0),
+      activeHourEnd: parsePositiveInteger(CONFIG.ACTIVE_HOUR_END, 24),
     };
   }
 
